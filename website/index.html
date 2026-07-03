@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smart Clipboard — a clipboard that remembers context</title>
+<meta name="description" content="A privacy-first clipboard manager with local semantic search. Every copy captured, classified, and findable in milliseconds — fully offline.">
+<style>
+  :root {
+    --bg: #0b0e14;
+    --panel: #12161f;
+    --border: #232a38;
+    --text: #e6e9ef;
+    --muted: #8b93a5;
+    --accent: #3b82f6;
+    --accent-hover: #2f6fe0;
+    --green: #34d399;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 0 24px; }
+  header { padding: 20px 0; border-bottom: 1px solid var(--border); }
+  header .wrap { display: flex; align-items: center; justify-content: space-between; }
+  .logo { font-weight: 700; font-size: 1.05rem; letter-spacing: -0.01em; }
+  .logo span { color: var(--accent); }
+  header a { color: var(--muted); text-decoration: none; font-size: 0.9rem; }
+  header a:hover { color: var(--text); }
+
+  .hero { text-align: center; padding: 96px 0 72px; }
+  .hero h1 {
+    font-size: clamp(2rem, 5vw, 3.2rem);
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    line-height: 1.15;
+    max-width: 720px;
+    margin: 0 auto 20px;
+  }
+  .hero h1 em { font-style: normal; color: var(--accent); }
+  .hero p.sub {
+    color: var(--muted);
+    font-size: 1.15rem;
+    max-width: 600px;
+    margin: 0 auto 40px;
+  }
+  .cta {
+    display: inline-block;
+    background: var(--accent);
+    color: #fff;
+    font-weight: 600;
+    font-size: 1.05rem;
+    padding: 14px 32px;
+    border-radius: 10px;
+    text-decoration: none;
+    transition: background 0.15s;
+  }
+  .cta:hover { background: var(--accent-hover); }
+  .cta-note { margin-top: 14px; color: var(--muted); font-size: 0.85rem; }
+  .cta-note a { color: var(--muted); }
+
+  .demo {
+    margin: 24px auto 0;
+    max-width: 640px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+    text-align: left;
+    font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+    font-size: 0.9rem;
+    overflow-x: auto;
+  }
+  .demo .q { color: var(--muted); }
+  .demo .q::before { content: "🔍 "; }
+  .demo .hit { display: flex; gap: 12px; margin-top: 10px; align-items: baseline; flex-wrap: wrap; }
+  .demo .chip {
+    background: rgba(59,130,246,0.15);
+    color: var(--accent);
+    border-radius: 6px;
+    padding: 1px 8px;
+    font-size: 0.75rem;
+    white-space: nowrap;
+  }
+  .demo .swatch {
+    display: inline-block; width: 12px; height: 12px; border-radius: 3px;
+    background: #3B82F6; vertical-align: baseline; margin-right: 6px;
+  }
+  .demo .meta { color: var(--muted); font-size: 0.78rem; }
+  .demo .ms { color: var(--green); font-size: 0.78rem; margin-top: 12px; }
+
+  section { padding: 56px 0; border-top: 1px solid var(--border); }
+  section h2 {
+    font-size: 1.6rem; font-weight: 700; letter-spacing: -0.02em;
+    margin-bottom: 32px; text-align: center;
+  }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 20px; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+  }
+  .card .icon { font-size: 1.5rem; margin-bottom: 12px; }
+  .card h3 { font-size: 1.05rem; font-weight: 600; margin-bottom: 8px; }
+  .card p { color: var(--muted); font-size: 0.92rem; }
+  .card code {
+    font-family: ui-monospace, Consolas, monospace;
+    background: rgba(59,130,246,0.12);
+    color: var(--accent);
+    padding: 1px 6px; border-radius: 5px; font-size: 0.85em;
+  }
+
+  .privacy { text-align: center; }
+  .privacy p.lead { color: var(--muted); max-width: 640px; margin: -16px auto 32px; }
+
+  footer {
+    border-top: 1px solid var(--border);
+    padding: 32px 0; text-align: center;
+    color: var(--muted); font-size: 0.85rem;
+  }
+  footer a { color: var(--muted); }
+  footer a:hover { color: var(--text); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <div class="logo">📋 Smart<span>Clipboard</span></div>
+    <a href="https://github.com/AdamyJain/smart-clipboard">GitHub →</a>
+  </div>
+</header>
+
+<main>
+  <div class="hero wrap">
+    <h1>A clipboard that remembers <em>what</em> you copied — and finds it when you ask.</h1>
+    <p class="sub">Every copy on your machine, captured and classified automatically,
+    searchable with natural language in ~30&nbsp;ms. Fully offline. Encrypted at rest.
+    Secrets never indexed.</p>
+    <a class="cta" href="https://github.com/AdamyJain/smart-clipboard/releases/latest/download/smart-clipboard-setup.exe">
+      ⬇&nbsp; Download for Windows
+    </a>
+    <div class="cta-note">Free &amp; open source · Windows 10/11 ·
+      <a href="https://github.com/AdamyJain/smart-clipboard/releases/latest">all releases</a></div>
+
+    <div class="demo">
+      <div class="q">what blue color did I copy</div>
+      <div class="hit">
+        <span><span class="swatch"></span>#3B82F6</span>
+        <span class="chip">hex color</span>
+        <span class="meta">tailwindcss.com · 2 hours ago</span>
+      </div>
+      <div class="ms">✓ 31 ms · fully local — no network involved</div>
+    </div>
+  </div>
+
+  <section>
+    <div class="wrap">
+      <h2>How it works</h2>
+      <div class="grid">
+        <div class="card">
+          <div class="icon">✂️</div>
+          <h3>Copy as usual</h3>
+          <p>Smart Clipboard sits in your tray and captures every copy in the
+          background — no hotkey to remember, no workflow to change. A small HUD
+          confirms each capture.</p>
+        </div>
+        <div class="card">
+          <div class="icon">🏷️</div>
+          <h3>Everything gets classified</h3>
+          <p>Colors, URLs, emails, code snippets, file paths, currency, dates —
+          each capture is typed automatically and embedded for semantic search.</p>
+        </div>
+        <div class="card">
+          <div class="icon">⌨️</div>
+          <h3>Search with <code>Alt+Space</code></h3>
+          <p>Keyword or natural language — full-text and vector search merged with a
+          recency boost. "That auth snippet from yesterday" just works.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="privacy">
+    <div class="wrap">
+      <h2>Private by design</h2>
+      <p class="lead">A clipboard manager sees everything you copy.
+      That's exactly why this one is built to never leak.</p>
+      <div class="grid">
+        <div class="card">
+          <div class="icon">🔒</div>
+          <h3>100% offline</h3>
+          <p>Capture, classification, embedding, and search all run locally.
+          No account, no cloud, no telemetry.</p>
+        </div>
+        <div class="card">
+          <div class="icon">🚫</div>
+          <h3>Password managers ignored</h3>
+          <p>Conceal-format copies are dropped before they're ever stored.
+          KeePass, 1Password, and Bitwarden are excluded out of the box.</p>
+        </div>
+        <div class="card">
+          <div class="icon">🛡️</div>
+          <h3>Secrets never indexed</h3>
+          <p>API keys, tokens, JWTs, and high-entropy strings are detected and kept
+          out of search indexes and embeddings entirely.</p>
+        </div>
+        <div class="card">
+          <div class="icon">🔑</div>
+          <h3>Encrypted at rest</h3>
+          <p>SQLCipher database with the key stored in Windows Credential Manager —
+          the file on disk is opaque ciphertext.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section style="text-align:center">
+    <div class="wrap">
+      <h2>Get it now</h2>
+      <a class="cta" href="https://github.com/AdamyJain/smart-clipboard/releases/latest/download/smart-clipboard-setup.exe">
+        ⬇&nbsp; Download for Windows
+      </a>
+      <div class="cta-note">Unsigned installer — SmartScreen may warn; choose
+      "More info → Run anyway".</div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    Smart Clipboard · MIT License ·
+    <a href="https://github.com/AdamyJain/smart-clipboard">Source on GitHub</a>
+  </div>
+</footer>
+
+</body>
+</html>

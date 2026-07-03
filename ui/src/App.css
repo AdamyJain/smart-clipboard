@@ -1,0 +1,36 @@
+* { box-sizing: border-box; }
+html, body, #root { margin: 0; height: 100%; }
+body {
+  font: 14px/1.4 "Segoe UI", system-ui, sans-serif;
+  background: #17171b;
+  color: #e7e7ea;
+}
+.palette { display: flex; flex-direction: column; height: 100vh; padding: 12px; gap: 8px; }
+.palette input {
+  width: 100%; padding: 10px 12px; font-size: 15px;
+  background: #202027; color: #e7e7ea;
+  border: 1px solid #33333c; border-radius: 8px; outline: none;
+}
+.palette input:focus { border-color: #5b8af5; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip {
+  background: #202027; color: #9a9aa3; border: 1px solid #2c2c34;
+  border-radius: 999px; padding: 3px 10px; font-size: 12px; cursor: pointer;
+}
+.chip.active { background: #2b3b63; color: #cfe0ff; border-color: #43619f; }
+.results { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
+.hit {
+  padding: 8px 10px; border-radius: 8px; cursor: pointer;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.hit.selected { background: #24242c; }
+.hit-text {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-family: Consolas, monospace; font-size: 13px;
+}
+.hit-meta { display: flex; gap: 10px; font-size: 11px; color: #7d7d87; }
+.badge {
+  background: #2a2a33; border-radius: 4px; padding: 0 6px; color: #a8b6d8;
+}
+.matched { color: #6f9f6f; }
+.empty { color: #6a6a73; padding: 20px; text-align: center; }

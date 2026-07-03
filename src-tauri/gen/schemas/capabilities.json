@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Main window and HUD capabilities","local":true,"windows":["main","hud"],"permissions":["core:default","core:window:allow-hide","core:window:allow-show","core:window:allow-set-focus","core:window:allow-set-position","global-shortcut:default"]}}

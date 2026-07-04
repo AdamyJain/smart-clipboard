@@ -23,12 +23,13 @@ by its author.
 | Key storage | `keyring` crate | OS keychain (Windows Credential Manager / macOS Keychain) |
 | IDs | `ulid` crate | Time-ordered, sync-friendly |
 | Clipboard | `tauri-plugin-clipboard-manager` + raw Win32 `AddClipboardFormatListener` (via `windows` crate) on Windows; NSPasteboard polling/observer on macOS | Raw listener needed to read conceal formats before deciding to capture |
-| Global hotkey | `tauri-plugin-global-shortcut` | With foreground-window check for the Alt+C ownership rule |
+| Global hotkey | `tauri-plugin-global-shortcut` | Alt+C everywhere; synthesized Ctrl+C guarded by `GetClipboardSequenceNumber` |
+| Window context | GDI screenshot (`windows` crate) + `Windows.Media.Ocr` + UI Automation (address-bar URL) | Extension-free browser context — see architecture §1 design revision |
 | OCR | `windows` crate → `Windows.Media.Ocr` (Win); `objc2` + Vision framework (macOS) | Local, free; Groq vision optional later |
 | Date parsing (NL queries) | `chrono` + `chrono-english` (or equivalent) | Local "yesterday"/"last week" parsing |
 | HTTP (Groq) | `reqwest` + `serde_json` | OpenAI-compatible client shape so the provider is swappable |
 | UI | React + TypeScript + Vite (Tauri webview) | Palette, session view, privacy dashboard |
-| Browser extension | Manifest V3, TypeScript | Chrome first, Firefox after |
+| ~~Browser extension~~ | dropped (2026-07-03) | replaced by screenshot-OCR + UIA URL capture — one install, one shortcut owner |
 
 ## 2. Repository layout
 
@@ -39,9 +40,9 @@ smart-clipboard/
 │   │   ├── main.rs             # Tauri setup, tray, window mgmt
 │   │   ├── capture/
 │   │   │   ├── clipboard.rs    # OS hooks, conceal-flag gate, exclusion gate
-│   │   │   ├── hotkey.rs       # Alt+C, ownership rule, dedupe window
-│   │   │   ├── hud.rs          # capture HUD overlay window
-│   │   │   └── native_msg.rs   # native-messaging host for the extension
+│   │   │   ├── hotkey.rs       # Alt+C: seq-guarded copy, spawns context worker
+│   │   │   ├── screenshot.rs   # GDI foreground-window capture → PNG
+│   │   │   └── uia.rs          # UI Automation address-bar URL (browsers)
 │   │   ├── pipeline/
 │   │   │   ├── fast_tier.rs    # entity classify, secret heuristics, dedupe, FTS write
 │   │   │   ├── entities.rs     # taxonomy regexes/heuristics
@@ -66,7 +67,6 @@ smart-clipboard/
 │   │       └── formats.rs      # markdown briefing, context packs, JSON
 │   └── Cargo.toml
 ├── ui/                         # React app (search palette, sessions, dashboard)
-├── extension/                  # MV3 extension (TS)
 └── docs/
 ```
 
@@ -188,57 +188,73 @@ it's the product's reason to exist, and dogfooding it now shapes everything afte
    never secrets; every call appended to `access_log`.
 4. Register in Claude Code (`claude mcp add`) and use it for real work.
 
-**Verification**
-- [ ] From Claude Code: "search my clipboard for the sqlite-vec crate docs link" →
-      correct capture returned.
-- [ ] Secrets and private-sensitivity items never appear in MCP results (seed test
-      data and assert).
-- [ ] Every MCP call visible as an `access_log` row.
+**Verification** — run 2026-07-03 (raw stdio JSON-RPC drive + `claude mcp list`):
+- [x] Semantic search over MCP: `search_context("what blue color did I copy")` →
+      `#3B82F6` rank 1 (613ms including lazy model load, warm cache).
+- [x] Secrets never appear: `search_context("ghp_ github token")` → the stored
+      `ghp_…` secret capture absent from results (exposure policy re-checks
+      `sensitivity='public'` per row before serialization).
+- [x] Every MCP call visible as an `access_log` row (3 calls ↔ 3 rows, actor
+      `mcp`, byte counts recorded).
+- [x] Registered in Claude Code (user scope): `claude mcp add smart-clipboard --
+      …\smart-clipboard.exe --mcp` → health check ✔ Connected. Note: points at
+      the debug binary; re-point after installing a release build.
 - One week of real dogfood use; capture friction notes feed phase 3.
 
 ---
 
-## 6. Phase 3 — sessions + browser extension
+## 6. Phase 3 — sessions + extension-free Alt+C context capture
 
-**Goal:** Alt+C captures with browser context, auto-grouped into concurrent
-sessions.
+**Goal:** Alt+C captures with window/browser context, auto-grouped into concurrent
+sessions. (Design revision 2026-07-03: the browser extension + native messaging
+approach was built, verified, then **replaced** at the user's direction by
+screenshot-OCR + UIA context capture — one install, one shortcut owner.)
 
 **Tasks**
 1. **Scored assignment** (`sessions/scoring.rs`): for each open session, score =
    w_t·f(time gap) + w_s·(source affinity: same registrable domain / same app);
-   assign best-above-threshold else open new session; weights and threshold in
-   config. Multiple open sessions supported (the PRD's interleaved-work case).
+   assign best-above-threshold else open new session. Zero-affinity captures may
+   join only within a 3-min burst window (prevents unrelated captures gluing onto
+   a recent session on time score alone — found live, fixed, regression-tested).
+   Multiple open sessions supported (the PRD's interleaved-work case).
 2. **Sweep** (`sessions/sweep.rs`): periodic task closes idle-past-threshold
-   sessions; nightly job placeholder for adaptive threshold (learning lands in
-   phase 4, logging starts now).
-3. **Alt+C path** (`capture/hotkey.rs`): global shortcut → foreground-window check —
-   if a known browser, yield to the extension (ownership rule); else capture
-   selection (synthesized copy) + window title, through the normal gates.
-4. **Browser extension** (`extension/`): MV3, `chrome.commands` Alt+C; content
-   script grabs selection + surrounding DOM text + URL/title;
-   `chrome.tabs.captureVisibleTab()` screenshot; background service worker relays
-   via native messaging.
-5. **Native messaging host** (`capture/native_msg.rs`): host manifest
-   registration (per-browser, installer step), JSON protocol
-   (`{text, context_before, context_after, url, title, screenshot_b64}`), dedupe
-   window (content hash, ±2s) against the global-hotkey path.
-6. **HUD upgrade:** shows assigned session ("captured → *rust sqlite encryption*"),
-   click to reassign/discard; reassignments write `session_corrections`.
-7. **Session view** (UI): list sessions with captures; merge/split/rename/reassign —
-   all writing `session_corrections`.
+   sessions; nightly adaptive-threshold nudge from `session_corrections`
+   (hill-climb with floor/ceiling, at most once per day).
+3. **Alt+C path** (`capture/hotkey.rs`), every app, extension-free:
+   screenshot + UIA URL first, then synthesized Ctrl+C (Alt released first)
+   guarded by `GetClipboardSequenceNumber` — stale clipboard is never captured;
+   no selection → the window's OCR text becomes the capture.
+4. **Screenshot + OCR context** (`capture/screenshot.rs`, `pipeline/assets.rs`,
+   `pipeline/ocr.rs`): GDI window capture → PNG asset on disk + `assets` row →
+   `Windows.Media.Ocr` → `assets.ocr_text` + capture `context_before`
+   (FTS-indexed; OCR text that trips the secret detector is dropped).
+5. **UIA URL** (`capture/uia.rs`): address-bar Edit control's Value pattern via
+   UI Automation on Chrome/Edge/Firefox/Brave; restores the scheme the omnibox
+   strips (incl. `file:///` for drive paths); best-effort.
+6. **HUD upgrade:** shows assigned session ("captured · text → *notepad*").
+7. **Session view** (UI): sessions tab in the palette; expand/rename/merge/
+   move/close — all writing `session_corrections`.
 
-**Verification**
-- [ ] Alt+C on a browser selection → capture has URL, title, surrounding text,
-      screenshot asset; HUD <150ms with session name.
-- [ ] Alt+C in a non-browser app → capture has app + window title; no double-fire
-      when a browser is focused (assert single row).
-- [ ] Interleaved test: research captures on topic A, two Slack copies, back to A →
-      A's session intact, tangent in its own session.
-- [ ] 30-min gap → next Alt+C opens a new session; sweep closes the old one without
-      any new capture.
-- [ ] Merge/split in the session view works and logs corrections.
-- Unit tests: scoring function (table-driven scenarios: gap boundaries, domain
-  affinity vs. gap tradeoffs); native-messaging protocol round-trip.
+**Verification** — run 2026-07-03 against the live app (simulated input):
+- [x] Alt+C on a Notepad selection → correct selection text (the stale-clipboard
+      bug was caught by this test and fixed with the sequence-number guard),
+      `origin='hotkey'`, window title, screenshot asset (~37KB PNG), OCR context
+      in `context_before`, session "notepad" assigned.
+- [x] Alt+C with **no selection** → window OCR text stored as the capture itself,
+      asset attached.
+- [x] FTS finds captures by words that appear only in OCR context ("Untitled" →
+      2 hits) — including via the dedupe-upgrade FTS refresh path.
+- [x] Alt+C in Chrome → `source_url` read from the address bar via UIA
+      (`file:///C:/...` correctly reconstructed); capture opened its own
+      session instead of joining the stale "notepad" one (burst-window fix).
+- [x] Sweep closes idle sessions (unit test: 45-min idle closed, 5-min stays).
+- [x] Merge/rename/reassign/close commands write `session_corrections` rows;
+      adaptive-threshold nightly job reads them (unit-tested both directions +
+      floor/ceiling + once-per-day guard).
+- [x] Unit tests: scoring scenarios incl. burst window, domain extraction,
+      dedupe-upgrade — 20/20 lib tests green.
+- [ ] Interactive dogfood pass owed: HUD visual with session name, palette
+      sessions tab, Alt+C feel in daily use.
 
 ---
 
@@ -362,8 +378,8 @@ everything that ever left the device.
    read — what, when, to whom, bytes; filter by actor; storage stats and "what would
    compaction do" alongside.
 5. Hardening pass: MCP results carry explicit provenance framing (content from
-   untrusted web pages is data, not instructions); fuzz the native-messaging and MCP
-   inputs; review error paths for content leaks into logs.
+   untrusted web pages is data, not instructions); fuzz the MCP inputs; review
+   error paths for content leaks into logs.
 
 **Verification**
 - [ ] Claude Code: "pull my latest research session" → attributed briefing arrives
@@ -400,5 +416,6 @@ everything that ever left the device.
   daily personal use from the end of phase 2 onward — later phases are steered by
   that usage, not by this document alone.
 - Revisit-flags recorded for v2: paste stack + transforms, cross-device sync (schema
-  already ready), Firefox extension port, Linux/Wayland scope, optional Groq-vision
+  already ready), DOM-exact browser context (would need an extension — dropped),
+  Linux/Wayland scope, optional Groq-vision
   image understanding, accessibility-API context capture for native apps.

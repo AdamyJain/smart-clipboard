@@ -28,9 +28,53 @@ body {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   font-family: Consolas, monospace; font-size: 13px;
 }
-.hit-meta { display: flex; gap: 10px; font-size: 11px; color: #7d7d87; }
+.hit-meta { display: flex; align-items: center; gap: 10px; font-size: 11px; color: #7d7d87; }
+.delete-btn {
+  margin-left: auto; background: transparent; color: #6a6a73; border: none;
+  border-radius: 4px; padding: 0 4px; font-size: 12px; cursor: pointer; line-height: 1.6;
+}
+.delete-btn:hover { color: #e0685f; background: #2a2226; }
 .badge {
   background: #2a2a33; border-radius: 4px; padding: 0 6px; color: #a8b6d8;
 }
 .matched { color: #6f9f6f; }
 .empty { color: #6a6a73; padding: 20px; text-align: center; }
+
+.tabs { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.tab-group { display: flex; gap: 6px; }
+.tab {
+  background: transparent; color: #7d7d87; border: none;
+  padding: 2px 8px; font-size: 12px; cursor: pointer; border-radius: 6px;
+}
+.tab.active { color: #cfe0ff; background: #24242c; }
+.clear-all {
+  background: transparent; color: #7d7d87; border: 1px solid #2c2c34;
+  border-radius: 6px; padding: 2px 8px; font-size: 11px; cursor: pointer;
+}
+.clear-all:hover { color: #e7e7ea; border-color: #43619f; }
+.clear-all.confirm { color: #e0685f; border-color: #7a3c38; }
+
+.session { border-bottom: 1px solid #22222a; }
+.session-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 10px; cursor: pointer; border-radius: 8px;
+}
+.session-head:hover { background: #1e1e25; }
+.session-topic { flex: 1; font-weight: 600; font-size: 13px; color: #cdd6ea; }
+.session-meta { font-size: 11px; color: #7d7d87; }
+.session-actions { display: flex; gap: 4px; }
+.session-actions button {
+  background: #202027; color: #9a9aa3; border: 1px solid #2c2c34;
+  border-radius: 6px; padding: 2px 7px; font-size: 11px; cursor: pointer;
+}
+.session-actions button:hover { color: #e7e7ea; border-color: #43619f; }
+.merge-target { color: #9fe870 !important; border-color: #4a6b3a !important; }
+.session-captures { list-style: none; margin: 0 0 8px 14px; padding: 0; }
+.session-captures .hit { cursor: default; }
+.session-captures select {
+  background: #202027; color: #9a9aa3; border: 1px solid #2c2c34;
+  border-radius: 4px; font-size: 11px;
+}
+.rename {
+  flex: 1; padding: 4px 8px !important; font-size: 13px !important;
+}

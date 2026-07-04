@@ -97,12 +97,14 @@ and from where.
 - FR1: The system shall capture clipboard content on every OS-level copy event
   (ambient capture), across Windows and macOS at minimum, Linux best-effort.
 - FR2: The system shall capture, via a single global hotkey (Alt+C), the current
-  selection plus source URL, page title, and surrounding text (browser) or window
-  title (other apps), plus a targeted screenshot of the active tab/window.
-- FR2a: Exactly one component shall own Alt+C at any moment: when a browser is
-  focused, the extension's shortcut owns it and relays through native messaging; the
-  desktop app's global shortcut yields, with content-hash + time-window dedupe as a
-  safety net against double-fire.
+  selection plus window title, a screenshot of the foreground window, OCR'd context
+  from that screenshot, and — in browsers — the page URL read from the address bar
+  via OS accessibility APIs (UI Automation). One mechanism, every app; no browser
+  extension required.
+- FR2a: The synthesized-copy step shall verify the clipboard actually changed
+  (clipboard sequence number) before using its content; a stale clipboard is never
+  captured. Alt+C with no selection captures the window's OCR text instead —
+  non-selectable content (images, PDFs, video frames) becomes searchable.
 - FR2b: Every Alt+C capture shall show an instant HUD/toast (target <150ms): what
   was captured and which session it joined, with click-through to reassign or
   discard. Capture must never feel like a black box.
@@ -248,7 +250,7 @@ Measured from the app's own data (no external telemetry):
 | 0 | De-risk spike: SQLCipher + FTS5-trigram + sqlite-vec in one Rust connection; fastembed round-trip; conceal-flag detection on Windows |
 | 1 | Tauri shell (Rust core), clipboard hook with conceal-flag + exclusion gates, SQLCipher DB + FTS5 (trigram), fast-tier entity classify, secret heuristics, local embeddings (fastembed) + `sqlite-vec`, search palette, capture HUD |
 | 2 | **Minimal MCP server** (`search_context`, `list_recent_captures`) — dogfood the differentiator immediately |
-| 3 | Alt+C sessions (scored assignment, concurrent sessions), browser extension + native messaging, Alt+C ownership rule |
+| 3 | Alt+C sessions (scored assignment, concurrent sessions), screenshot + OCR context capture, UIA address-bar URL — extension-free |
 | 4 | Groq classify/tag pipeline + topic-affinity correction, adaptive threshold learning, local NL query parser + optional RAG synthesis |
 | 5 | Screenshot capture + OS-native OCR |
 | 6 | Session finalize (dedupe/cluster/summary), exports (markdown / context packs / JSON), paste conveniences |
@@ -261,11 +263,12 @@ Measured from the app's own data (no external telemetry):
   first thing to validate (phase 0), before any feature work.
 - **Session boundary accuracy.** The scored-assignment model and adaptive threshold
   need real-world tuning; the correction-rate metric (§8) is the signal.
-- **Alt+C double-fire.** The global hotkey and the extension shortcut can both fire
-  on the same keypress; the ownership rule + dedupe window (FR2a) is the mitigation,
-  but per-browser behavior needs testing.
-- **Browser extension complexity.** Manifest V3 behavior differs across Chrome and
-  Firefox; native messaging setup is per-browser.
+- **OCR context quality.** Screenshot OCR replaces DOM-level surrounding text
+  (the extension approach was dropped); it is noisier — window chrome, menus and
+  tab titles leak into context. Good enough for search recall; not a citation
+  source.
+- **UIA address-bar reading.** Browser accessibility trees differ per browser and
+  can change between versions; URL capture is best-effort with graceful absence.
 - **Screenshot storage growth.** Even bounded, intentional capture accumulates —
   compression and retention policy need to be right from phase 5, not retrofitted.
 - **Groq vision (downgraded).** No longer on the critical path — OCR is OS-native.

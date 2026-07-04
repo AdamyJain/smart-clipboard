@@ -27,8 +27,14 @@ Earlier drafts mixed Node-only libraries (`better-sqlite3`, `transformers.js`, t
 TypeScript MCP SDK) into a Tauri core; those are explicitly rejected — they would
 require a Node sidecar process and tie background work to a second runtime. Instead:
 `rusqlite` (bundled SQLCipher), `sqlite-vec` (Rust bindings), `fastembed` (local
-embeddings), `rmcp` (MCP server). TypeScript remains for the React UI and the
-browser extension only.
+embeddings), `rmcp` (MCP server). TypeScript remains for the React UI only.
+
+**Extension-free capture (design revision, 2026-07-03):** an earlier draft used a
+browser extension + native messaging for in-browser Alt+C context. Dropped — one
+install, one shortcut owner, no per-browser packaging. Browser context now comes
+from the OS side: screenshot + native OCR for surrounding context, UI Automation
+for the address-bar URL. Tradeoff: OCR context is noisier than DOM text (fine for
+search recall, not for citation), and there is no DOM-exact `context_before/after`.
 
 ---
 
@@ -39,14 +45,15 @@ browser extension only.
 │ Local machine                                                        │
 │                                                                      │
 │  ┌──────────────────────┐         ┌───────────────────────────────┐ │
-│  │ Browser extension    │◄───────►│ Tauri app — Rust core         │ │
-│  │ Manifest V3, TS      │ native  │ - clipboard hook + gates      │ │
-│  │ - selection+context  │messaging│   (conceal flags, exclusions) │ │
-│  │ - tab screenshot     │         │ - global hotkey (Alt+C rule)  │ │
-│  │ - page URL/title     │         │ - fast tier (classify/secret) │ │
-│  │ - owns Alt+C when    │         │ - embedder (fastembed)        │ │
-│  │   browser focused    │         │ - session scoring engine      │ │
-│  └──────────────────────┘         │ - enrichment queue worker     │ │
+│  │ Foreground window    │◄────────│ Tauri app — Rust core         │ │
+│  │ (any app / browser)  │ Alt+C:  │ - clipboard hook + gates      │ │
+│  │ - synthesized Ctrl+C │ SendInp │   (conceal flags, exclusions) │ │
+│  │ - GDI screenshot     │ + GDI   │ - global hotkey (all apps)    │ │
+│  │ - UIA address-bar    │ + UIA   │ - fast tier (classify/secret) │ │
+│  │   URL (browsers)     │         │ - native OCR (context)        │ │
+│  └──────────────────────┘         │ - embedder (fastembed)        │ │
+│                                   │ - session scoring engine      │ │
+│                                   │ - enrichment queue worker     │ │
 │                                   │ - MCP server (rmcp)           │ │
 │  ┌──────────────────────┐         │ - capture HUD (overlay win)   │ │
 │  │ React/TS webview     │◄───IPC──┤                               │ │
@@ -88,13 +95,13 @@ local and does not appear on the network edge of this diagram by design.
 | OS clipboard hook | `tauri-plugin-clipboard-manager` / `arboard`, plus raw Win32 `AddClipboardFormatListener` on Windows | Fires on every copy; pushes a raw event through the gate chain below |
 | **Gate 0: conceal flags** | Check `ExcludeClipboardContentFromMonitorProcessing` (Windows) / `org.nspasteboard.ConcealedType` (macOS) **before anything else** | Password managers set these on every copy — zero-config correct behavior with 1Password/Bitwarden/KeePass; dropped content never enters any queue |
 | Gate 1: per-app exclusion list | Config-driven, checked before capture queues | Second line of defense for apps that don't set conceal flags (banking apps, etc.) |
-| Global hotkey | `tauri-plugin-global-shortcut` | Alt+C is the single dedicated shortcut — every intentional capture, no separate start/end hotkey |
-| **Alt+C ownership rule** | Browser focused → the extension's `chrome.commands` shortcut owns Alt+C and relays via native messaging; the Tauri global shortcut yields when a known browser is the foreground window | Safety net: dedupe by (content hash, ±2s window) in case both fire anyway |
+| Global hotkey | `tauri-plugin-global-shortcut` | Alt+C is the single dedicated shortcut — every intentional capture, every app, one owner (no extension) |
+| **Alt+C selection leg** | Synthesized Ctrl+C via `SendInput` (releasing the held Alt first), guarded by `GetClipboardSequenceNumber` | If the sequence number never changes there was no selection — stale clipboard content is never captured. The ambient listener sees the synthesized copy first; the richer hotkey event upgrades that row in place (dedupe path, incl. FTS refresh) |
+| **Alt+C context leg** | GDI screenshot of the foreground window → PNG asset → `Windows.Media.Ocr` | OCR text becomes searchable context (`context_before`); with no selection it becomes the capture itself — non-selectable content (images, PDFs, video frames) is capturable |
+| **Alt+C URL leg (browsers)** | UI Automation: address-bar Edit control's Value pattern | Works on Chrome/Edge/Firefox/Brave without an extension; best-effort (scheme restored for stripped omnibox values, incl. `file:///` drive paths) |
 | **Capture HUD** | Small Tauri overlay window, <150ms, auto-dismiss | Shows what was captured + which session it joined; click-through to reassign or discard. This is what makes capture feel trustworthy instead of haunted |
-| Image payloads | Copied images stored as content-addressed WebP assets | OCR'd locally (see 3.2), searchable via OCR text; never sent to Groq by default |
-| Session assignment | Scoring engine in Rust core — see 3.4 | Multiple sessions may be open concurrently; no single rolling pointer |
-| Browser extension | Manifest V3, TypeScript | On Alt+C inside a browser: grabs selection, surrounding DOM text, page URL/title, and a `chrome.tabs.captureVisibleTab()` screenshot |
-| Desktop app ↔ extension link | Native messaging (preferred) or localhost WebSocket with a per-session token | Extension can't write to SQLite directly; always relays through the app core |
+| Image payloads | Copied images stored as content-addressed assets | OCR'd locally (see 3.2), searchable via OCR text; never sent to Groq by default |
+| Session assignment | Scoring engine in Rust core — see 3.4 | Multiple sessions may be open concurrently; no single rolling pointer; zero-affinity captures only join within a short burst window |
 
 ### 3.2 Preprocessing layer — two-tier pipeline
 
@@ -329,15 +336,17 @@ semantically searchable too → scored session assignment (usually: no open sess
 matches → unsessioned) → no Groq call at all unless the user later explicitly asks a
 question that triggers RAG synthesis over search hits.
 
-**B — research session (Alt+C in a browser):**
-extension owns the shortcut (ownership rule) → grabs selection + DOM context + URL +
-screenshot → relays via native messaging → gates 0/1 → scored assignment picks the
+**B — research session (Alt+C, browser or any app):**
+global shortcut fires → screenshot of the foreground window (GDI) + address-bar URL
+via UI Automation (browsers) → synthesized Ctrl+C, guarded by the clipboard sequence
+number (no selection → the OCR text becomes the capture) → gates 0/1 (the ambient
+listener path) → fast tier stores/upgrades the row; screenshot stored as asset and
+OCR'd via OS-native OCR into searchable context → scored assignment picks the
 matching open session (time + source affinity) or opens one → **HUD flashes:
-"captured → session: React auth research"** → fast tier (instant) + queued for slow
-tier → embedding written to `sqlite-vec`; screenshot OCR'd via OS-native OCR; Groq
-classify/tag runs async and returns topic-affinity for boundary correction (call
-logged to `access_log`) → session closes via gap timeout, nightly sweep, or manual
-split → finalize job (dedupe, cluster, Groq summary) → exported as
+"captured → session: React auth research"** → embedding written to `sqlite-vec`;
+Groq classify/tag runs async and returns topic-affinity for boundary correction
+(call logged to `access_log`) → session closes via gap timeout, nightly sweep, or
+manual split → finalize job (dedupe, cluster, Groq summary) → exported as
 markdown/pack/JSON or pulled by an agent via MCP (read logged).
 
 ---
@@ -376,7 +385,7 @@ markdown/pack/JSON or pulled by an agent via MCP (read logged).
 | 0 | De-risk spike: SQLCipher + FTS5-trigram + sqlite-vec in one Rust connection; fastembed round-trip; conceal-flag detection on Windows |
 | 1 | Tauri shell (Rust core), clipboard hook with conceal-flag + exclusion gates, SQLCipher DB + FTS5 (trigram), fast-tier entity classify, secret heuristics, local embeddings (fastembed) + `sqlite-vec`, search palette, capture HUD |
 | 2 | **Minimal MCP server** (`search_context`, `list_recent_captures`) — dogfood the differentiator immediately |
-| 3 | Alt+C sessions (scored assignment, concurrent sessions), browser extension + native messaging, Alt+C ownership rule |
+| 3 | Alt+C sessions (scored assignment, concurrent sessions), screenshot + OCR context capture, UIA address-bar URL — extension-free |
 | 4 | Groq classify/tag pipeline + topic-affinity correction, adaptive threshold learning, local NL query parser + optional RAG synthesis |
 | 5 | Screenshot capture + OS-native OCR |
 | 6 | Session finalize (dedupe/cluster/summary), exports (markdown / context packs / JSON), paste conveniences |

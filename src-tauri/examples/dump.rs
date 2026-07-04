@@ -31,6 +31,25 @@ fn main() -> anyhow::Result<()> {
     let vec_count: i64 = conn.query_row("SELECT count(*) FROM captures_vec", [], |r| r.get(0))?;
     let cap_count: i64 = conn.query_row("SELECT count(*) FROM captures WHERE deleted_at IS NULL", [], |r| r.get(0))?;
     println!("\ncaptures={cap_count}  vectors={vec_count}  fts-hits-for-'ghp'={fts_secret} (must be 0)");
+
+    println!("\naccess_log (latest 10):");
+    let mut stmt = conn.prepare(
+        "SELECT ts, actor, action, ifnull(ref_id,''), ifnull(bytes_sent,0)
+         FROM access_log ORDER BY ts DESC LIMIT 10",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+            r.get::<_, i64>(4)?,
+        ))
+    })?;
+    for row in rows {
+        let (ts, actor, action, ref_id, bytes) = row?;
+        println!("{ts}  {actor:<5} {action:<22} bytes={bytes:<6} {ref_id}");
+    }
     Ok(())
 }
 

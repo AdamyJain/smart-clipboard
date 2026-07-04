@@ -34,9 +34,10 @@
     const c = e.payload;
     const title = document.getElementById("title");
     const isSecret = c.sensitivity === "secret";
+    const sess = c.session_topic ? ` → ${c.session_topic}` : "";
     title.textContent = isSecret
       ? "captured (secret — stored encrypted, never indexed)"
-      : `captured · ${c.entity_type}${c.deduped ? " · duplicate" : ""}`;
+      : `captured · ${c.entity_type}${sess}${c.deduped && !sess ? " · duplicate" : ""}`;
     title.className = isSecret ? "secret" : "";
     document.getElementById("preview").textContent = isSecret ? "••••••••" : c.preview;
     clearTimeout(hideTimer);

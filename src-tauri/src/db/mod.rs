@@ -2,7 +2,7 @@
 //! registration, migrations.
 
 use anyhow::{Context, Result};
-use rusqlite::{ffi::sqlite3_auto_extension, Connection};
+use rusqlite::{ffi::sqlite3_auto_extension, params, Connection};
 use sqlite_vec::sqlite3_vec_init;
 use std::path::Path;
 
@@ -51,7 +51,50 @@ fn migrate(conn: &Connection) -> Result<()> {
         conn.execute_batch(include_str!("schema.sql"))?;
         conn.pragma_update(None, "user_version", 1)?;
     }
+    if version < 2 {
+        // origin of a capture: ambient (clipboard listener) | hotkey (Alt+C) |
+        // extension (browser native messaging)
+        conn.execute_batch("ALTER TABLE captures ADD COLUMN origin TEXT DEFAULT 'ambient';")?;
+        conn.pragma_update(None, "user_version", 2)?;
+    }
     Ok(())
+}
+
+/// Hard-deletes one capture: FTS entry, vector, tag links, then the row
+/// itself. Secrets were never indexed into FTS, so that delete is
+/// best-effort (external-content fts5 errors on a 'delete' of content it
+/// never saw — ignored here, same as the upgrade-in-place path in fast_tier).
+pub fn delete_capture(conn: &Connection, id: &str) -> Result<()> {
+    let row: rusqlite::Result<(i64, String, String, String)> = conn.query_row(
+        "SELECT rowid, raw_text, ifnull(context_before,''), ifnull(context_after,'')
+         FROM captures WHERE id = ?1",
+        [id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    );
+    if let Ok((rowid, rt, cb, ca)) = row {
+        let _ = conn.execute(
+            "INSERT INTO captures_fts(captures_fts, rowid, raw_text, context_before, context_after)
+             VALUES('delete', ?1, ?2, ?3, ?4)",
+            params![rowid, rt, cb, ca],
+        );
+    }
+    conn.execute("DELETE FROM captures_vec WHERE capture_id = ?1", [id])?;
+    conn.execute("DELETE FROM capture_tags WHERE capture_id = ?1", [id])?;
+    conn.execute("DELETE FROM captures WHERE id = ?1", [id])?;
+    Ok(())
+}
+
+/// Hard-deletes every capture row. Returns the number removed.
+pub fn delete_all_captures(conn: &Connection) -> Result<usize> {
+    let mut stmt = conn.prepare("SELECT id FROM captures")?;
+    let ids: Vec<String> = stmt
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    drop(stmt);
+    for id in &ids {
+        delete_capture(conn, id)?;
+    }
+    Ok(ids.len())
 }
 
 pub fn now_ms() -> i64 {

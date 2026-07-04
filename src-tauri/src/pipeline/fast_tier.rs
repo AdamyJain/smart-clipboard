@@ -7,9 +7,17 @@ use anyhow::Result;
 use rusqlite::{params, Connection};
 use sha2::{Digest, Sha256};
 
+#[derive(Default)]
 pub struct IncomingCapture {
     pub raw_text: String,
     pub source_app: Option<String>,
+    /// ambient | hotkey | extension
+    pub origin: Option<String>,
+    pub window_title: Option<String>,
+    pub source_url: Option<String>,
+    pub context_before: Option<String>,
+    pub context_after: Option<String>,
+    pub asset_id: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -19,6 +27,7 @@ pub struct StoredCapture {
     pub sensitivity: String,
     pub preview: String,
     pub deduped: bool,
+    pub captured_at: i64,
 }
 
 const DEDUPE_WINDOW_MS: i64 = 10 * 60 * 1000;
@@ -51,12 +60,52 @@ pub fn process(conn: &Connection, cap: IncomingCapture) -> Result<Option<StoredC
         .ok();
     if let Some(id) = existing {
         conn.execute("UPDATE captures SET captured_at = ?1 WHERE id = ?2", params![now, id])?;
+        // an intentional (Alt+C) re-capture of an ambient row upgrades it in
+        // place: richer context wins, no duplicate row. The FTS row must be
+        // dropped and re-added around the update (external-content FTS5 can't
+        // see column changes on its own).
+        if cap.origin.as_deref().is_some_and(|o| o != "ambient") {
+            if !is_secret {
+                let old: rusqlite::Result<(i64, String, String, String)> = conn.query_row(
+                    "SELECT rowid, raw_text, ifnull(context_before,''), ifnull(context_after,'')
+                     FROM captures WHERE id = ?1",
+                    params![id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                );
+                if let Ok((rowid, rt, cb, ca)) = old {
+                    let _ = conn.execute(
+                        "INSERT INTO captures_fts(captures_fts, rowid, raw_text, context_before, context_after)
+                         VALUES('delete', ?1, ?2, ?3, ?4)",
+                        params![rowid, rt, cb, ca],
+                    );
+                }
+            }
+            conn.execute(
+                "UPDATE captures SET
+                    origin = ?1,
+                    page_title = coalesce(?2, page_title),
+                    source_url = coalesce(?3, source_url),
+                    context_before = coalesce(?4, context_before),
+                    context_after = coalesce(?5, context_after),
+                    asset_id = coalesce(?6, asset_id)
+                 WHERE id = ?7",
+                params![cap.origin, cap.window_title, cap.source_url, cap.context_before, cap.context_after, cap.asset_id, id],
+            )?;
+            if !is_secret {
+                conn.execute(
+                    "INSERT INTO captures_fts(rowid, raw_text, context_before, context_after)
+                     SELECT rowid, raw_text, context_before, context_after FROM captures WHERE id = ?1",
+                    params![id],
+                )?;
+            }
+        }
         return Ok(Some(StoredCapture {
             id,
             entity_type: entity.as_str().into(),
             sensitivity: if is_secret { "secret" } else { "public" }.into(),
             preview: preview_of(&text),
             deduped: true,
+            captured_at: now,
         }));
     }
 
@@ -72,8 +121,10 @@ pub fn process(conn: &Connection, cap: IncomingCapture) -> Result<Option<StoredC
     };
 
     conn.execute(
-        "INSERT INTO captures (id, captured_at, content_type, entity_type, raw_text, source_app, sensitivity, dedupe_hash, enrichment_status)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending')",
+        "INSERT INTO captures (id, captured_at, content_type, entity_type, raw_text, source_app,
+                               sensitivity, dedupe_hash, enrichment_status, origin, page_title,
+                               source_url, context_before, context_after, asset_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending', ?9, ?10, ?11, ?12, ?13, ?14)",
         params![
             id,
             now,
@@ -83,6 +134,12 @@ pub fn process(conn: &Connection, cap: IncomingCapture) -> Result<Option<StoredC
             cap.source_app,
             if is_secret { "secret" } else { "public" },
             hash,
+            cap.origin.as_deref().unwrap_or("ambient"),
+            cap.window_title,
+            cap.source_url,
+            cap.context_before,
+            cap.context_after,
+            cap.asset_id,
         ],
     )?;
 
@@ -105,6 +162,7 @@ pub fn process(conn: &Connection, cap: IncomingCapture) -> Result<Option<StoredC
         sensitivity: if is_secret { "secret" } else { "public" }.into(),
         preview: preview_of(&text),
         deduped: false,
+        captured_at: now,
     }))
 }
 
@@ -133,6 +191,8 @@ mod tests {
         db::register_vec_extension();
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(include_str!("../db/schema.sql")).unwrap();
+        conn.execute_batch("ALTER TABLE captures ADD COLUMN origin TEXT DEFAULT 'ambient';")
+            .unwrap();
         conn
     }
 
@@ -142,6 +202,7 @@ mod tests {
         let stored = process(&conn, IncomingCapture {
             raw_text: "const store = useAuthStore();".into(),
             source_app: Some("Code.exe".into()),
+            ..Default::default()
         }).unwrap().unwrap();
         assert_eq!(stored.entity_type, "code:js");
         let hits: i64 = conn.query_row(
@@ -156,7 +217,7 @@ mod tests {
         let conn = test_conn();
         let stored = process(&conn, IncomingCapture {
             raw_text: "ghp_16C7e42F292c6912E7710c838347Ae178B4a".into(),
-            source_app: None,
+            ..Default::default()
         }).unwrap().unwrap();
         assert_eq!(stored.sensitivity, "secret");
         // external-content FTS: bare count(*) reads the content table, so the
@@ -175,8 +236,8 @@ mod tests {
     #[test]
     fn duplicate_within_window_dedupes() {
         let conn = test_conn();
-        let a = process(&conn, IncomingCapture { raw_text: "same text".into(), source_app: None }).unwrap().unwrap();
-        let b = process(&conn, IncomingCapture { raw_text: "same text".into(), source_app: None }).unwrap().unwrap();
+        let a = process(&conn, IncomingCapture { raw_text: "same text".into(), ..Default::default() }).unwrap().unwrap();
+        let b = process(&conn, IncomingCapture { raw_text: "same text".into(), ..Default::default() }).unwrap().unwrap();
         assert_eq!(a.id, b.id);
         assert!(b.deduped);
         let n: i64 = conn.query_row("SELECT count(*) FROM captures", [], |r| r.get(0)).unwrap();
@@ -184,8 +245,36 @@ mod tests {
     }
 
     #[test]
+    fn intentional_recapture_upgrades_ambient_row() {
+        // Alt+C synthesizes Ctrl+C, so the ambient listener stores the row
+        // first; the hotkey event must upgrade it in place, not duplicate it
+        let conn = test_conn();
+        let a = process(&conn, IncomingCapture {
+            raw_text: "fn main() {}".into(),
+            source_app: Some("cursor.exe".into()),
+            ..Default::default()
+        }).unwrap().unwrap();
+        let b = process(&conn, IncomingCapture {
+            raw_text: "fn main() {}".into(),
+            source_app: Some("cursor.exe".into()),
+            origin: Some("hotkey".into()),
+            window_title: Some("main.rs — cursor".into()),
+            ..Default::default()
+        }).unwrap().unwrap();
+        assert_eq!(a.id, b.id);
+        let (origin, title): (String, Option<String>) = conn.query_row(
+            "SELECT origin, page_title FROM captures WHERE id = ?1",
+            [&a.id], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(origin, "hotkey");
+        assert_eq!(title.as_deref(), Some("main.rs — cursor"));
+        let n: i64 = conn.query_row("SELECT count(*) FROM captures", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
     fn empty_text_ignored() {
         let conn = test_conn();
-        assert!(process(&conn, IncomingCapture { raw_text: "   ".into(), source_app: None }).unwrap().is_none());
+        assert!(process(&conn, IncomingCapture { raw_text: "   ".into(), ..Default::default() }).unwrap().is_none());
     }
 }

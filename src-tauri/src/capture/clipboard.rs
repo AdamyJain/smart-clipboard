@@ -12,10 +12,18 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RawClipboardEvent {
     pub text: String,
     pub source_app: Option<String>,
+    /// None/"ambient" for listener events; "hotkey"/"extension" for Alt+C paths
+    pub origin: Option<String>,
+    pub window_title: Option<String>,
+    pub source_url: Option<String>,
+    pub context_before: Option<String>,
+    pub context_after: Option<String>,
+    /// foreground-window screenshot (Alt+C only); pipeline stores + OCRs it
+    pub screenshot_png: Option<Vec<u8>>,
 }
 
 pub struct GateConfig {
@@ -44,7 +52,7 @@ fn format_name(fmt: u32) -> String {
 }
 
 /// Foreground window's process image name, lowercased (e.g. "chrome.exe").
-fn foreground_app() -> Option<String> {
+pub fn foreground_app() -> Option<String> {
     unsafe {
         let hwnd = GetForegroundWindow();
         if hwnd.0.is_null() {
@@ -128,7 +136,7 @@ unsafe fn read_event(hwnd: HWND) -> Option<RawClipboardEvent> {
         let _ = windows::Win32::System::Memory::GlobalUnlock(
             windows::Win32::Foundation::HGLOBAL(handle.0),
         );
-        Some(RawClipboardEvent { text, source_app })
+        Some(RawClipboardEvent { text, source_app, ..Default::default() })
     })();
     let _ = CloseClipboard();
     result
